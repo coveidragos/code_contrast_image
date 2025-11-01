@@ -1,15 +1,3 @@
-"""
-Image Restoration using HJB Equations (Color, no added noise)
-
-- Processes lenna.png as a color image (RGB) in [0,1]
-- Restores each channel via HJB PDE iteration
-- Uses source term h(x,y) = ln(sqrt(x^2 + y^2) + 1.0)
-- No synthetic noise added
-
-Based on:
-D.-P. Covei, "Image Restoration via the Integration of Optimal Control Techniques
-and the Hamilton-Jacobi-Bellman Equation", Mathematics, 2025.
-"""
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
@@ -23,7 +11,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (needed for 3D plots)
 # Model parameters
 # -----------------------------
 N = 3
-sigma_default = 0.05
+sigma = 0.05
 R = 100.0
 u0 = 297.79
 alpha = 1.04
@@ -57,13 +45,13 @@ def value_function_ode(r, u):
     exponent = alpha / (alpha - 1)
     term = A * safe_power(u_prime, exponent)
     du1 = u_prime
-    du2 = - ((N - 1) / r) * u_prime + (2 / (sigma_default ** 2)) * (term - h(r))
+    du2 = - ((N - 1) / r) * u_prime + (2 / (sigma ** 2)) * (term - h(r))
     return [du1, du2]
 
 # -----------------------------
-# Solve ODE (value function, radial)
+# Solve ODE
 # -----------------------------
-print("Starting ODE integration...")
+print("Starting ODE integration\ldots")
 r_values = np.arange(r0, r_shoot_end + rInc*0.1, rInc)
 u_initial = [u0, -1e-6]
 sol = solve_ivp(value_function_ode, [r0, r_shoot_end], u_initial,
@@ -82,10 +70,10 @@ print("Computed boundary condition g (from integral):", g_boundary)
 print("Computed boundary condition g (from ODE solution):", g_from_solution)
 
 # -----------------------------
-# Restoration dynamics (spatially varying noise)
+# Restore image (spatially varying noise)
 # -----------------------------
 def restore_image(image_initial, dt, T, sol, alpha, sigma):
-    timesteps = int(np.ceil(T / dt))
+    timesteps = int(T / dt)
     x = image_initial.copy()
     for _ in range(timesteps):
         r = np.linalg.norm(x, axis=-1)
@@ -103,68 +91,61 @@ def restore_image(image_initial, dt, T, sol, alpha, sigma):
     return x
 
 # -----------------------------
-# Load image
+# Load and normalize image
 # -----------------------------
-img = Image.open("old.png").convert("RGB")
+img = Image.open("lenna.png").convert("RGB")
 img_array = np.array(img).astype(np.float64)
+img_mean = np.mean(img_array, axis=(0, 1), keepdims=True)
+img_centered = img_array - img_mean
+max_abs = np.max(np.abs(img_centered))
+scale_factor = (R/2) / max_abs if max_abs != 0 else 1
+x_initial = img_centered * scale_factor
 
 # -----------------------------
-# Stage 1: TV denoising (on [0,1] range)
-# -----------------------------
-img_norm = img_array / 255.0
-tv_weight = 0.089
-img_denoised_norm = denoise_tv_chambolle(img_norm, weight=tv_weight, channel_axis=-1)
-img_denoised = np.clip(img_denoised_norm * 255, 0, 255).astype(np.float64)
-
-# -----------------------------
-# Centering and scaling based on the denoised image
-# -----------------------------
-den_mean = np.mean(img_denoised, axis=(0, 1), keepdims=True)
-den_centered = img_denoised - den_mean
-max_abs = np.max(np.abs(den_centered))
-scale_factor = (R/2) / max_abs if max_abs != 0 else 1.0
-x_initial = den_centered * scale_factor  # initial condition is the denoised image
-
-# -----------------------------
-# Parameter tuning for restoration (starting from denoised)
+# Parameter tuning
 # -----------------------------
 sigma_values = [0.002, 0.007, 0.0189, 0.05]
 T_values = [0.197, 1.0]
 dt_values = [0.01, 0.17]
 results = []
 
-print("\nParameter Tuning Results (restoration after denoising):")
+print("\nParameter Tuning Results:")
 for sigma_param, T_param, dt_param in itertools.product(sigma_values, T_values, dt_values):
     restored_state = restore_image(x_initial, dt_param, T_param, sol, alpha, sigma_param)
-    restored_from_denoised = restored_state / scale_factor + den_mean
-    restored_from_denoised = np.clip(restored_from_denoised, 0, 255)
-    # Metrics vs original degraded image
-    mse_val = np.mean((img_array - restored_from_denoised) ** 2)
+    restored_image = restored_state / scale_factor + img_mean
+    restored_image = np.clip(restored_image, 0, 255)
+    mse_val = np.mean((img_array - restored_image) ** 2)
     psnr_val = peak_signal_noise_ratio(img_array.astype(np.uint8),
-                                       restored_from_denoised.astype(np.uint8),
+                                       restored_image.astype(np.uint8),
                                        data_range=255)
     ssim_val = structural_similarity(img_array.astype(np.uint8),
-                                     restored_from_denoised.astype(np.uint8),
+                                     restored_image.astype(np.uint8),
                                      channel_axis=-1, data_range=255)
     results.append({'sigma': sigma_param, 'T': T_param, 'dt': dt_param,
                     'MSE': mse_val, 'PSNR': psnr_val, 'SSIM': ssim_val})
-    print(f"sigma={sigma_param}, T={T_param}, dt={dt_param} | "
-          f"MSE: {mse_val:.4f}, PSNR: {psnr_val:.4f} dB, SSIM: {ssim_val:.4f}")
+    print(f"MSE: {mse_val:.4f}, PSNR: {psnr_val:.4f} dB, SSIM: {ssim_val:.4f}")
 
 best_config = max(results, key=lambda r: r['PSNR'])
-print("\nBest configuration based on PSNR (restoration after denoising):")
+print("\nBest configuration based on PSNR:")
 print(best_config)
 
 # -----------------------------
-# Final restoration starting from the denoised image
+# Final restoration and TV denoising
 # -----------------------------
 restored_state_best = restore_image(x_initial, best_config['dt'], best_config['T'],
                                     sol, alpha, best_config['sigma'])
-restored_from_denoised_best = restored_state_best / scale_factor + den_mean
-restored_from_denoised_best = np.clip(restored_from_denoised_best, 0, 255).astype(np.uint8)
+restored_image_best = restored_state_best / scale_factor + img_mean
+restored_image_best = np.clip(restored_image_best, 0, 255).astype(np.uint8)
+
+restored_image_norm = restored_image_best.astype(np.float64) / 255.0
+tv_weight = 0.089
+restored_image_denoised_norm = denoise_tv_chambolle(restored_image_norm,
+                                                    weight=tv_weight,
+                                                    channel_axis=-1)
+restored_image_denoised = np.clip(restored_image_denoised_norm * 255, 0, 255).astype(np.uint8)
 
 # -----------------------------
-# Display 2D images (original, denoised, restored-from-denoised)
+# Display 2D images
 # -----------------------------
 plt.figure(figsize=(18, 6))
 plt.subplot(1, 3, 1)
@@ -173,55 +154,56 @@ plt.title("(i) Original Degraded Image")
 plt.axis("off")
 
 plt.subplot(1, 3, 2)
-plt.imshow(img_denoised.astype(np.uint8))
-plt.title("(ii) TV Denoised Image (Stage 1)")
+plt.imshow(restored_image_best)
+plt.title("(ii) Restored Image")
 plt.axis("off")
 
 plt.subplot(1, 3, 3)
-plt.imshow(restored_from_denoised_best)
-plt.title("(iii) Restored From Denoised (Stage 2)")
+plt.imshow(restored_image_denoised)
+plt.title("(iii) Restored and Denoised Image")
 plt.axis("off")
 plt.tight_layout()
 plt.show()
 
 # -----------------------------
-# 3D difference surfaces (diagnostics)
+# 3D difference surfaces (as in the paper)
 # -----------------------------
 def rgb2gray(img):
     return np.dot(img[..., :3], [0.2989, 0.5870, 0.1140])
 
+
 original_gray = rgb2gray(img_array.astype(np.float64))
-denoised_gray = rgb2gray(img_denoised.astype(np.float64))
-restored_gray = rgb2gray(restored_from_denoised_best.astype(np.float64))
+restored_gray = rgb2gray(restored_image_best.astype(np.float64))
+denoised_gray = rgb2gray(restored_image_denoised.astype(np.float64))
 
-diff_denoised_restored = np.abs(denoised_gray - restored_gray)
-diff_original_denoised = np.abs(original_gray - denoised_gray)
+diff_restored_denoised = np.abs(restored_gray - denoised_gray)
 diff_original_restored = np.abs(original_gray - restored_gray)
+diff_original_denoised = np.abs(original_gray - denoised_gray)
 
-rows, cols = diff_denoised_restored.shape
+rows, cols = diff_restored_denoised.shape
 X, Y = np.meshgrid(np.arange(cols), np.arange(rows))
 
 fig3 = plt.figure(figsize=(24, 8))
 
 ax1 = fig3.add_subplot(1, 3, 1, projection='3d')
-surf1 = ax1.plot_surface(X, Y, diff_denoised_restored, cmap='plasma', alpha=0.85, linewidth=0)
-ax1.set_title("3D Surface: Diff (i) Denoised vs Restored")
+surf1 = ax1.plot_surface(X, Y, diff_restored_denoised, cmap='plasma', alpha=0.85, linewidth=0)
+ax1.set_title("3D Surface: Diff (i) Restored vs Denoised")
 ax1.set_xlabel("Pixel Column")
 ax1.set_ylabel("Pixel Row")
 ax1.set_zlabel("Difference Intensity")
 fig3.colorbar(surf1, ax=ax1, shrink=0.6, aspect=12)
 
 ax2 = fig3.add_subplot(1, 3, 2, projection='3d')
-surf2 = ax2.plot_surface(X, Y, diff_original_denoised, cmap='coolwarm', alpha=0.85, linewidth=0)
-ax2.set_title("3D Surface: Diff (ii) Original vs Denoised")
+surf2 = ax2.plot_surface(X, Y, diff_original_restored, cmap='coolwarm', alpha=0.85, linewidth=0)
+ax2.set_title("3D Surface: Diff (ii) Original vs Restored")
 ax2.set_xlabel("Pixel Column")
 ax2.set_ylabel("Pixel Row")
 ax2.set_zlabel("Difference Intensity")
 fig3.colorbar(surf2, ax=ax2, shrink=0.6, aspect=12)
 
 ax3 = fig3.add_subplot(1, 3, 3, projection='3d')
-surf3 = ax3.plot_surface(X, Y, diff_original_restored, cmap='inferno', alpha=0.85, linewidth=0)
-ax3.set_title("3D Surface: Diff (iii) Original vs Restored From Denoised")
+surf3 = ax3.plot_surface(X, Y, diff_original_denoised, cmap='inferno', alpha=0.85, linewidth=0)
+ax3.set_title("3D Surface: Diff (iii) Original vs Restored & Denoised")
 ax3.set_xlabel("Pixel Column")
 ax3.set_ylabel("Pixel Row")
 ax3.set_zlabel("Difference Intensity")
