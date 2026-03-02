@@ -4,6 +4,7 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.sparse import csr_matrix, linalg
 from PIL import Image
 from skimage.restoration import denoise_tv_chambolle
+from skimage import exposure
 import os
 import time
 
@@ -112,16 +113,11 @@ def apply_enhancement(img_path, t1, t2, drift_field, T=0.2, dt=0.01):
         r_sq = np.sum(x**2, axis=-1)
         r = np.sqrt(r_sq + 1e-12)
         
-        # Map to 2D potential (using r as one axis for consistency)
-        # Even if the PDE is solved on (y1, y2), for radial parity 
-        # we can use any 2D projection or just the norm if it's radial.
-        # But we'll follow the 2D PDE logic: lookup at (x, y) 
+        # Lookup drift magnitude at local coordinates
         coords = x[:, :, :2].reshape(-1, 2)
         drift_mag = interp(coords).reshape(H, W)
         
         # Consistent Radial Displacement (Repulsive for contrast)
-        # x_new = x + dt * (drift_mag) * (x / r)
-        # matches the logic u' / r in the radial code.
         drift = drift_mag[..., np.newaxis] * (x / r[..., np.newaxis])
         
         # Minimal stochasticity for sharpness
@@ -133,22 +129,12 @@ def apply_enhancement(img_path, t1, t2, drift_field, T=0.2, dt=0.01):
     final = x / scale + mean_val
     return np.clip(final, 0, 255).astype(np.uint8)
 
-from skimage import exposure, img_as_ubyte
-
 def compute_contrast_metrics(img):
-    """
-    Computes several metrics for image contrast and quality.
-    - EME (Measure of Enhancment)
-    - Tenengrad (Gradient-based sharpness)
-    - Gray-Level Variance (General contrast)
-    """
     if len(img.shape) == 3:
         gray = np.dot(img[...,:3], [0.2989, 0.5870, 0.1140])
     else:
         gray = img
         
-    # 1. EME (Logarithmic Measure of Enhancement)
-    # Splits image into 8x8 blocks and calculates contrast
     block_size = 8
     h, w = gray.shape
     eme = 0
@@ -161,51 +147,53 @@ def compute_contrast_metrics(img):
                 eme += 20 * np.log(b_max / b_min)
     eme /= (blocks_h * blocks_w)
     
-    # 2. Tenengrad (Sharpness/Gradient)
     gx, gy = np.gradient(gray)
     tenengrad = np.mean(gx**2 + gy**2)
-    
-    # 3. Variance
     std_dev = np.std(gray)
     
     return {"EME": eme, "Tenengrad": tenengrad, "StdDev": std_dev}
 
 if __name__ == "__main__":
-    img_filepath = "c:/2026/Articole_2026/Trimis_23_November_2025_rendmat@lincei.it/23_Noiembrie_2025_rendmat@lincei.it/lenna.png"
-    
-    t1, t2, field = solve_hjb_2d_final_clarity()
-    enhanced = apply_enhancement(img_filepath, t1, t2, field)
-    
-    # Baseline comparison: Histogram Equalization (HE)
-    orig_img = Image.open(img_filepath).convert("RGB")
-    orig_np = np.array(orig_img)
-    he_img = exposure.equalize_hist(orig_np)
-    he_img = (he_img * 255).astype(np.uint8)
-    
-    # Optimized TV denoise for HJB
-    denoised = (denoise_tv_chambolle(enhanced.astype(float)/255.0, weight=0.04, channel_axis=-1)*255).astype(np.uint8)
-    
-    # Metrics Calculation
-    m_orig = compute_contrast_metrics(orig_np)
-    m_he = compute_contrast_metrics(he_img)
-    m_hjb = compute_contrast_metrics(enhanced)
-    m_denoised = compute_contrast_metrics(denoised)
-    
-    print("\nContrast Metrics Comparison:")
-    print(f"{'Method':<15} | {'EME':<10} | {'Tenengrad':<10} | {'StdDev':<10}")
-    print("-" * 55)
-    print(f"{'Original':<15} | {m_orig['EME']:<10.2f} | {m_orig['Tenengrad']:<10.2f} | {m_orig['StdDev']:<10.2f}")
-    print(f"{'Hist. Equal.':<15} | {m_he['EME']:<10.2f} | {m_he['Tenengrad']:<10.2f} | {m_he['StdDev']:<10.2f}")
-    print(f"{'HJB 2D PDE':<15} | {m_hjb['EME']:<10.2f} | {m_hjb['Tenengrad']:<10.2f} | {m_hjb['StdDev']:<10.2f}")
-    print(f"{'HJB + TV':<15} | {m_denoised['EME']:<10.2f} | {m_denoised['Tenengrad']:<10.2f} | {m_denoised['StdDev']:<10.2f}")
+    # Check for image in both current and parent directory
+    img_filepath = "lenna.png"
+    if not os.path.exists(img_filepath):
+        img_filepath = "../lenna.png"
+        
+    if not os.path.exists(img_filepath):
+        print("Error: lenna.png not found.")
+    else:
+        t1, t2, field = solve_hjb_2d_final_clarity()
+        enhanced = apply_enhancement(img_filepath, t1, t2, field)
+        
+        # Baseline comparison
+        orig_img = Image.open(img_filepath).convert("RGB")
+        orig_np = np.array(orig_img)
+        he_img = (exposure.equalize_hist(orig_np) * 255).astype(np.uint8)
+        
+        # Optimized TV denoise
+        denoised = (denoise_tv_chambolle(enhanced.astype(float)/255.0, weight=0.04, channel_axis=-1)*255).astype(np.uint8)
+        
+        # Metrics
+        m_orig = compute_contrast_metrics(orig_np)
+        m_he = compute_contrast_metrics(he_img)
+        m_hjb = compute_contrast_metrics(enhanced)
+        m_denoised = compute_contrast_metrics(denoised)
+        
+        print("\nContrast Metrics Comparison:")
+        print(f"{'Method':<15} | {'EME':<10} | {'Tenengrad':<10} | {'StdDev':<10}")
+        print("-" * 55)
+        print(f"{'Original':<15} | {m_orig['EME']:<10.2f} | {m_orig['Tenengrad']:<10.2f} | {m_orig['StdDev']:<10.2f}")
+        print(f"{'Hist. Equal.':<15} | {m_he['EME']:<10.2f} | {m_he['Tenengrad']:<10.2f} | {m_he['StdDev']:<10.2f}")
+        print(f"{'HJB 2D PDE':<15} | {m_hjb['EME']:<10.2f} | {m_hjb['Tenengrad']:<10.2f} | {m_hjb['StdDev']:<10.2f}")
+        print(f"{'HJB + TV':<15} | {m_denoised['EME']:<10.2f} | {m_denoised['Tenengrad']:<10.2f} | {m_denoised['StdDev']:<10.2f}")
 
-    # Visual Comparison
-    plt.figure(figsize=(18, 6))
-    plt.subplot(1, 4, 1); plt.imshow(orig_img); plt.title("Original")
-    plt.subplot(1, 4, 2); plt.imshow(he_img); plt.title("Hist. Equalization")
-    plt.subplot(1, 4, 3); plt.imshow(enhanced); plt.title("HJB 2D PDE Contrast")
-    plt.subplot(1, 4, 4); plt.imshow(denoised); plt.title("HJB 2D + TV")
-    
-    plt.tight_layout()
-    plt.savefig("hjb_comparison_metrics.png")
-    plt.show()
+        # Visual Comparison Fig for LaTeX
+        plt.figure(figsize=(18, 6))
+        plt.subplot(1, 4, 1); plt.imshow(orig_img); plt.title("Original")
+        plt.subplot(1, 4, 2); plt.imshow(he_img); plt.title("Hist. Equalization")
+        plt.subplot(1, 4, 3); plt.imshow(enhanced); plt.title("HJB 2D PDE Contrast")
+        plt.subplot(1, 4, 4); plt.imshow(denoised); plt.title("HJB 2D + TV")
+        
+        plt.tight_layout()
+        plt.savefig("hjb_comparison_metrics.png", dpi=300)
+        plt.show()
