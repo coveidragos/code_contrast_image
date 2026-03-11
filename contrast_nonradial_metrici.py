@@ -262,12 +262,12 @@ def compute_contrast_metrics(img):
 # Main script with alpha sweep
 # -----------------------------
 if __name__ == "__main__":
-    img_filepath = "lincei.png"
+    img_filepath = "springer4.png"
     if not os.path.exists(img_filepath):
-        img_filepath = "../lincei.png"
+        img_filepath = "../springer4.png"
 
     if not os.path.exists(img_filepath):
-        print("Error: lincei.png not found.")
+        print("Error: springer4.png not found.")
     else:
         # Original image
         orig_img = Image.open(img_filepath).convert("RGB")

@@ -102,7 +102,10 @@ def solve_hjb_policy_iteration(a=1.5, b_ellipse=1.0, sigma=0.3, alpha=1.5,
     N_int = len(interior_indices[0])
 
     # Source term h(y)
-    h_y = X**2 + Y**2
+   # h_y = X**2 + Y**2
+   # Source term h(y) = |y|^p
+    r = np.sqrt(X**2 + Y**2)
+    h_y = r**p
     H = np.max(h_y)
 
     # Torsion function φ
